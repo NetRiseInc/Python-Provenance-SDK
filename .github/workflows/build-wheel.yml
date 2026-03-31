@@ -1,0 +1,104 @@
+name: Build Python SDK Wheel
+
+on:
+  pull_request:
+    types: [closed]
+  push:
+    branches:
+      - main
+
+jobs:
+  build-wheel:
+    if: github.event_name == 'push' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: latest
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Build wheel
+        run: poetry build
+
+      - name: Get package info
+        id: package_info
+        run: |
+          PACKAGE_NAME=$(grep '^name = ' pyproject.toml | sed 's/name = "\(.*\)"/\1/' | head -1)
+          PACKAGE_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/' | head -1)
+          echo "package_name=${PACKAGE_NAME:-netrise-provenance-sdk}" >> $GITHUB_OUTPUT
+          echo "package_version=${PACKAGE_VERSION:-0.1.0}" >> $GITHUB_OUTPUT
+
+      - name: Find wheel file
+        id: find_wheel
+        run: |
+          WHEEL_FILE=$(ls dist/*.whl 2>/dev/null | head -1)
+          echo "wheel_path=${WHEEL_FILE}" >> $GITHUB_OUTPUT
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package_info.outputs.package_name }}-${{ steps.package_info.outputs.package_version }}-wheel
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          retention-days: 30
+
+  upload-to-netrise:
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.merged == true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get package info
+        id: package_info
+        run: |
+          PACKAGE_NAME=$(grep '^name = ' pyproject.toml | sed 's/name = "\(.*\)"/\1/' | head -1)
+          PACKAGE_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/' | head -1)
+          echo "package_name=${PACKAGE_NAME:-netrise-provenance-sdk}" >> $GITHUB_OUTPUT
+          echo "package_version=${PACKAGE_VERSION:-0.1.0}" >> $GITHUB_OUTPUT
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.package_info.outputs.package_name }}-${{ steps.package_info.outputs.package_version }}-wheel
+          path: dist
+
+      - name: Find wheel file
+        id: find_wheel
+        run: |
+          WHEEL_FILE=$(ls dist/*.whl 2>/dev/null | head -1)
+          echo "wheel_path=${WHEEL_FILE}" >> $GITHUB_OUTPUT
+
+      - name: Upload to NetRise Platform
+        uses: NetRiseInc/netrise-bca-action@v1.0.7
+        with:
+          netrise_token: ${{ secrets.NETRISE_TOKEN }}
+          artifact_path: ${{ steps.find_wheel.outputs.wheel_path }}
+          artifact_name: ${{ steps.package_info.outputs.package_name }}-${{ steps.package_info.outputs.package_version }}
+
+      - name: Report upload status
+        run: |
+          echo "Upload completed for ${{ steps.package_info.outputs.package_name }} v${{ steps.package_info.outputs.package_version }}"
